@@ -1,0 +1,577 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <title>Mario y Gatito en WebGL 2.0</title>
+  <meta http-equiv="content-type" content="text/html;charset=utf-8">
+</head>
+  <body>
+      <h2>Mario y Gatito en WebGL 2.0</h2>
+      <canvas id="webglcanvas" style="border: none;" width="1024" height="576"></canvas>
+      <img src="fondo.jpg" id="imagenFondo" hidden />
+      <img src="gatito.png" id="imagenGatito" hidden />
+      <img src="mario-removebg-preview.png" id="imagenMario" hidden />
+      <!--
+        /***************************************************************************/
+        /* Se definen los códigos shaders.                                         */
+        /***************************************************************************/
+      -->
+      <script id="vs" type="vertex">
+        #version 300 es
+        precision mediump float;
+        uniform mat4 uMatrizProyeccion;
+        uniform mat4 uMatrizVista;
+        uniform mat4 uMatrizModelo;
+        uniform mat4 uMatrizTextura;
+        layout(location = 0) in vec2 aVertices;
+        layout(location = 1) in vec2 aCoordenadasDeTextura;
+        out vec2 vCoordenadasDeTextura;
+        void main() {  
+            vCoordenadasDeTextura = (uMatrizTextura * 
+            vec4(aCoordenadasDeTextura, 0.0, 1.0)).xy;  
+            gl_Position = uMatrizProyeccion * uMatrizVista * uMatrizModelo * vec4(aVertices, 0.0, 1.0);
+        }
+      </script>
+
+      <script id="fs" type="fragment">
+        #version 300 es
+        precision mediump float;
+        uniform sampler2D uUnidadDeTextura;
+        in vec2 vCoordenadasDeTextura;
+        out vec4 color;
+        void main() {
+            color = texture(uUnidadDeTextura, vCoordenadasDeTextura); 
+        }
+      </script>
+	
+      <script>
+        'use strict';
+
+        /* Variables globales */
+        var gl;
+        var programaID;
+        var fondoTextura, gatitoTextura, marioTextura;
+        var codigoFondo, codigoGatito, codigoMario;
+
+        /* Variables Uniformes */
+        var uMatrizProyeccion;
+        var uMatrizVista;
+        var uMatrizModelo;
+        var uUnidadDeTextura;
+        var uMatrizTextura;
+
+        /* Matrices */
+        var MatrizProyeccion = new Array(16);
+        var MatrizVista = new Array(16);
+        var MatrizModelo = new Array(16);
+        var MatrizTextura = new Array(16);
+
+        /* Variables para animación del gatito */
+        var tiempo_real;
+        var inicio = Date.now();
+        var fin, duracion;
+        const PERIODO_MOVIMIENTO = 0.06;
+        var tiempo_movimiento = PERIODO_MOVIMIENTO;
+        var velGatito_x = 0;
+        var desGatito_u = 0;
+
+        /* Variables para Mario */
+        var marioX = 0;
+        var marioY = 0;
+        var marioVelX = 0;
+        var marioVelY = 0;
+        var marioGravedad = -0.01;
+        var marioEnSuelo = false;
+        var estadoMario = 0; // 0: normal, 1: saltando, 2: agachado
+        var marioDireccion = -1; // 1 para derecha, -1 para izquierda
+        var despX_Textura = 0;
+        var despY_Textura = 5.2/6;
+        var frameActual = 0;
+        var tiempoAnimacion = 0;
+        const TIEMPO_ENTRE_FRAMES = 0.1;
+
+        /***************************************************************************/
+        /* Se crean, compilan y enlazan los programas Shader                      */
+        /***************************************************************************/
+        function compilaEnlazaLosShaders() {
+          /* Se compila el shader de vertice */
+          var shaderDeVertice = gl.createShader(gl.VERTEX_SHADER);
+          gl.shaderSource(shaderDeVertice, document.getElementById("vs").text.trim());
+          gl.compileShader(shaderDeVertice);
+          if (!gl.getShaderParameter(shaderDeVertice, gl.COMPILE_STATUS)) {
+             console.error(gl.getShaderInfoLog(shaderDeVertice));
+          }
+
+          /* Se compila el shader de fragmento */
+          var shaderDeFragmento = gl.createShader(gl.FRAGMENT_SHADER);
+          gl.shaderSource(shaderDeFragmento, document.getElementById("fs").text.trim());
+          gl.compileShader(shaderDeFragmento);
+          if (!gl.getShaderParameter(shaderDeFragmento, gl.COMPILE_STATUS)) {
+             console.error(gl.getShaderInfoLog(shaderDeFragmento));
+          }
+
+          /* Se enlaza ambos shader */
+          programaID = gl.createProgram();
+          gl.attachShader(programaID, shaderDeVertice); 
+          gl.attachShader(programaID, shaderDeFragmento);
+          gl.linkProgram(programaID);
+          if (!gl.getProgramParameter(programaID, gl.LINK_STATUS)) {
+             console.error(gl.getProgramInfoLog(programaID));
+          }
+        }
+
+        /***************************************************************************/
+        /* Transformaciones mediante matrices                                      */
+        /***************************************************************************/
+
+        /* Convierte de grados a radianes */
+        function toRadians(grados) {
+          return grados * Math.PI / 180;
+        };
+
+        /* Matriz Identidad */
+        function identidad(r) {
+          r[0] = 1; r[4] = 0; r[ 8] = 0; r[12] = 0;
+          r[1] = 0; r[5] = 1; r[ 9] = 0; r[13] = 0;
+          r[2] = 0; r[6] = 0; r[10] = 1; r[14] = 0;
+          r[3] = 0; r[7] = 0; r[11] = 0; r[15] = 1;
+        }
+
+        /* Traslación - glTranslatef */
+        function traslacion(matriz, tx, ty, tz) {
+          var r = new Array(16);
+          r[0] = 1; r[4] = 0; r[ 8] = 0; r[12] = tx;
+          r[1] = 0; r[5] = 1; r[ 9] = 0; r[13] = ty;
+          r[2] = 0; r[6] = 0; r[10] = 1; r[14] = tz;
+          r[3] = 0; r[7] = 0; r[11] = 0; r[15] =  1;
+          multiplica(matriz, matriz, r);
+        }
+
+        /* Escalación - glScalef */
+        function escalacion(matriz, sx, sy, sz) { 
+          var r = new Array(16);
+          r[0] = sx; r[4] =  0; r[ 8] =  0; r[12] =  0;
+          r[1] =  0; r[5] = sy; r[ 9] =  0; r[13] =  0;
+          r[2] =  0; r[6] =  0; r[10] = sz; r[14] =  0;
+          r[3] =  0; r[7] =  0; r[11] =  0; r[15] =  1;
+          multiplica(matriz, matriz, r);
+        }
+
+        /* Multiplicación de matrices de 4 x 4 */
+        function multiplica(c, a, b) {
+          let r = new Array(16);
+          let i, j, k;
+          for (i = 0; i < 4; i++){
+            for (j = 0; j < 4; j++){
+              let s = 0;
+              for (k = 0; k < 4; k++)
+                s = s + a[i + k * 4] * b[k + j * 4];
+                r[i + j * 4] = s;
+              }
+            }
+          for (i = 0; i < 16; i++)
+            c[i] = r[i];
+        }
+
+        /* Proyección Paralela - glOrtho */
+        function ortho(r, izq, der, abj, arr, cerca, lejos) {
+          r[0] = 2/(der - izq); r[4] =             0; r[ 8] =                  0; r[12] =         -(der + izq)/(der - izq);
+          r[1] =             0; r[5] = 2/(arr - abj); r[ 9] =                  0; r[13] =         -(arr + abj)/(arr - abj);
+          r[2] =             0; r[6] =             0; r[10] = -2/(lejos - cerca); r[14] = -(lejos + cerca)/(lejos - cerca);
+          r[3] =             0; r[7] =             0; r[11] =                  0; r[15] =                                1;
+        }
+
+        /***********************************************************************************/
+        /* Se define la geometría y se almacenan en los buffers de memoria y se renderiza. */
+        /***********************************************************************************/
+        class Rectangulo {
+          constructor(gl, x1, y1, x2, y2, u1, v1, u2, v2) {
+            /* Coordenadas cartesianas (x, y) */
+            var vertices = [
+              x1, y1, // 0
+              x2, y1, // 1
+              x2, y2, // 2
+              x1, y2, // 3
+            ];
+
+            /* Coordenadas de textura (u, v) */
+            var coord_textura = [
+               u1, v1, // 0
+               u2, v1, // 1
+               u2, v2, // 2
+               u1, v2, // 3
+            ];
+
+            /* Se crea el objeto del arreglo de vértices (VAO) */
+            this.rectanguloVAO = gl.createVertexArray();
+
+            /* Se activa el objeto */
+            gl.bindVertexArray(this.rectanguloVAO);
+
+            /* Se genera un nombre (código) para el buffer */ 
+            var codigoVertices = gl.createBuffer();
+
+            /* Se asigna un nombre (código) al buffer */
+            gl.bindBuffer(gl.ARRAY_BUFFER, codigoVertices);
+         
+            /* Se transfiere los datos desde la memoria nativa al buffer de la GPU */
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+
+            /* Se habilita el arreglo de los vértices (indice = 0) */
+            gl.enableVertexAttribArray(0);
+
+            /* Se especifica los atributos del arreglo de vértices */
+            gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+            /* Se genera un nombre (código) para el buffer */ 
+            var codigoCoordenadasDeTextura = gl.createBuffer();
+
+            /* Se asigna un nombre (código) al buffer */
+            gl.bindBuffer(gl.ARRAY_BUFFER, codigoCoordenadasDeTextura);
+
+            /* Se transfiere los datos desde la memoria nativa al buffer de la GPU */
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(coord_textura), gl.STATIC_DRAW);
+
+            /* Se habilita el arreglo de las coordenadas de textura (indice = 1) */
+            gl.enableVertexAttribArray(1);
+
+            /* Se especifica el arreglo de las coordenadas de textura */
+            gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+
+            /* Se desactiva el objeto del arreglo de vértices */
+            gl.bindVertexArray(null);
+
+            /* Se deja de asignar un nombre (código) al buffer */
+            gl.bindBuffer(gl.ARRAY_BUFFER, null);
+          }
+
+          muestra(gl) {
+            /* Se activa el objeto del arreglo de vértices */
+            gl.bindVertexArray(this.rectanguloVAO);
+
+            /* Renderiza las primitivas desde los datos de los arreglos */
+            gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
+
+            /* Se desactiva el objeto del arreglo de vértices */
+            gl.bindVertexArray(null);
+          }
+        }
+
+        /***************************************************************************/
+        /* Lee la Textura                                                          */
+        /***************************************************************************/
+        function leeLaTextura(gl, ID_del_archivo, codigoDeTextura) {
+          /* Se asigna un nombre (código) a la textura */
+          gl.bindTexture(gl.TEXTURE_2D, codigoDeTextura);
+
+          /* true, invierte los píxeles en el orden de abajo hacia arriba que WebGL espera */
+          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+
+          /* Obtiene la imagen */
+          var imagen = document.getElementById(ID_del_archivo);
+
+          /* Se lee la textura */  
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, imagen);
+
+          /* Para que el patrón de textura se agrande y se acomode a una área grande */
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+          /* Para que el patrón de textura se reduzca y se acomode a una área pequeña */
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+
+          /* Para repetir la textura tanto en s y t fuera del rango del 0 al 1 */
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+
+          /* Se deja de asignar un nombre (código) a la textura */
+          gl.bindTexture(gl.TEXTURE_2D, null);
+        }
+
+        /***************************************************************************/
+        /* Funciones de control de teclas para Mario                               */
+        /***************************************************************************/
+        function keyDown(event) {
+            switch (event.keyCode) {
+                case 38: // Flecha arriba
+                case 87: // W
+                if (marioEnSuelo) {
+                    marioVelY = 0.2;
+                    marioEnSuelo = false;
+                    estadoMario = 1; // Mario saltando
+                }
+                break;
+
+                case 40: // Flecha abajo
+                case 83: // S
+                marioVelY = -0.1;
+                estadoMario = 2; // Mario agachado
+                break;
+
+                case 39: // Flecha derecha
+                case 68: // D
+                marioVelX = 0.04;
+                marioDireccion = 1;
+                break;
+
+                case 37: // Flecha izquierda
+                case 65: // A
+                marioVelX = -0.04;
+                marioDireccion = -1;
+                break;
+
+                case 27: // Esc
+                window.close();
+                break;
+            }
+            }
+
+            function keyUp(event) {
+            switch (event.keyCode) {
+                case 38: // Flecha arriba
+                case 87: // W
+                estadoMario = 0; // Mario normal
+                break;
+                case 39: // Flecha derecha
+                case 37: // Flecha izquierda
+                case 65: // A
+                case 68: // D
+                marioVelX = 0;
+                estadoMario = 0; // Mario normal
+                break;
+
+                case 40: // Flecha abajo
+                case 83: // S
+                marioVelY = -1;
+                estadoMario = 0; // Mario normal
+                
+                if (!marioEnSuelo){
+                  marioX+=marioVelX;
+                  //despX_Textura = 2/7;
+                }
+                break;
+            }
+            }
+
+
+        /***************************************************************************/
+        /* Funciones de actualización para Mario                                   */
+        /***************************************************************************/
+        function actualizarPosicionMario() {
+          // Aplicar gravedad si no está en el suelo
+          if (!marioEnSuelo) {
+            marioVelY += marioGravedad;
+          }
+          
+          // Actualizar posición de Mario
+          marioX += marioVelX;
+          marioY += marioVelY;
+          
+          // Limitar posición en Y (suelo)
+          if (marioY < -2.8) {
+            marioY = -2.8;
+            marioVelY = 0;
+            marioEnSuelo = true;
+          }
+          
+          // Limitar posición en Y (techo)
+          if (marioY > 2.8) {
+            marioY = 2.8;
+            marioVelY = 0;
+          }
+          
+          // Limitar posición en X (bordes de la pantalla)
+          if (marioX > 4.5) marioX = 4.5;
+          if (marioX < -4.5) marioX = -4.5;
+
+
+          // Animar si Mario se está moviendo horizontalmente
+          if (marioVelX !== 0 && marioEnSuelo) {
+            tiempoAnimacion += 1/60; // Asumiendo 60 FPS
+
+            if (tiempoAnimacion > TIEMPO_ENTRE_FRAMES) {
+              tiempoAnimacion = 0;
+              frameActual = (frameActual+1)%2; // Si tienes 7 cuadros horizontales
+              despX_Textura = frameActual / 7;
+            }
+          } else {
+            // Si está quieto, mostrar el primer frame
+            frameActual = 0;
+            despX_Textura = 2/7;
+          }
+
+          if (estadoMario === 1) {
+            despX_Textura = 0 / 7; // Usa el frame que quieras para el salto
+          } else if (estadoMario === 2) {
+            despX_Textura = 4 / 7; // Usa el frame para agachado
+          } else if (marioVelX !== 0 && marioEnSuelo) {
+            tiempoAnimacion += 1 / 60;
+            if (tiempoAnimacion > TIEMPO_ENTRE_FRAMES) {
+              tiempoAnimacion = 0;
+              frameActual = (frameActual + 1) % 3;
+              despX_Textura = frameActual / 7;
+            }
+          }
+            
+            else {
+              // Si está quieto, mostrar el primer frame
+              frameActual = 0;
+              despX_Textura = 2 / 7;
+            }
+
+          if (marioY < -2.8) {
+            marioY = -2.8;
+            marioVelY = 0;
+            marioEnSuelo = true;
+            if (estadoMario === 2) {
+              estadoMario = 1;
+            }
+          }
+
+
+
+
+        }
+
+        /***************************************************************************/
+        /* Se renderizan todos los objetos                                         */
+        /***************************************************************************/
+        function dibuja() {
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.activeTexture(gl.TEXTURE0);
+
+          // Dibujar el fondo
+          identidad(MatrizModelo);
+          gl.uniformMatrix4fv(uMatrizModelo, false, MatrizModelo);
+
+          identidad(MatrizTextura);
+          gl.uniformMatrix4fv(uMatrizTextura, false, MatrizTextura);
+
+          gl.uniform1i(uUnidadDeTextura, 0);
+          gl.bindTexture(gl.TEXTURE_2D, codigoFondo);
+          fondoTextura.muestra(gl);
+
+          // Dibujar el gatito
+          identidad(MatrizModelo);
+          traslacion(MatrizModelo, velGatito_x, 0, 0);
+          gl.uniformMatrix4fv(uMatrizModelo, false, MatrizModelo);
+
+          identidad(MatrizTextura);
+          traslacion(MatrizTextura, 0, desGatito_u, 0);
+          gl.uniformMatrix4fv(uMatrizTextura, false, MatrizTextura);
+
+          gl.uniform1i(uUnidadDeTextura, 0);
+          gl.bindTexture(gl.TEXTURE_2D, codigoGatito);
+          gatitoTextura.muestra(gl);
+
+          // Dibujar a Mario
+          identidad(MatrizModelo);
+          // Escalar según la dirección para "voltear" el sprite
+          traslacion(MatrizModelo, marioX, marioY, 0);
+          escalacion(MatrizModelo, marioDireccion * 1, 2, 1);
+          gl.uniformMatrix4fv(uMatrizModelo, false, MatrizModelo);
+
+          identidad(MatrizTextura);
+          traslacion(MatrizTextura, despX_Textura, despY_Textura, 0);
+          gl.uniformMatrix4fv(uMatrizTextura, false, MatrizTextura);
+
+          gl.uniform1i(uUnidadDeTextura, 0);
+          gl.bindTexture(gl.TEXTURE_2D, codigoMario);
+          marioTextura.muestra(gl);
+
+          // Actualizar posición de Mario
+          actualizarPosicionMario();
+
+          // Animación del gatito
+          fin = Date.now();
+          duracion = fin - inicio;
+          inicio = fin;
+          tiempo_real = duracion / 1000.0;
+          tiempo_movimiento = tiempo_movimiento - tiempo_real;
+
+          if(tiempo_movimiento < 0.001){
+            tiempo_movimiento = PERIODO_MOVIMIENTO;
+
+            velGatito_x = velGatito_x + 0.1;
+            desGatito_u = desGatito_u - 1/13;
+          
+            if(desGatito_u < -1)
+              desGatito_u = 0;
+
+            if(velGatito_x > 9)
+              velGatito_x = -2;
+          }
+
+          requestAnimationFrame(dibuja);
+        }
+
+        function main() {
+          /* Paso 1: Se prepara el lienzo y se obtiene el contexto del WebGL. */
+          var canvas = document.getElementById("webglcanvas");
+
+          gl = canvas.getContext("webgl2");
+          if (!gl) {
+             document.write("WebGL 2.0 no está disponible en tu navegador");
+             return;
+          }
+
+          // Se define la ventana de despliegue
+          gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+          // Registrar listeners para el teclado
+          document.addEventListener("keydown", keyDown, true);
+          document.addEventListener("keyup", keyUp, true);
+
+          /* Paso 2: Se crean, compilan y enlazan los programas Shader */
+          compilaEnlazaLosShaders();
+
+          /* Paso 3: Se define la geometría y se almacenan en los buffers de memoria */
+          fondoTextura = new Rectangulo(gl, -5, -5, 5, 5, 0, 0, 1, 1);
+          codigoFondo = gl.createTexture();
+          leeLaTextura(gl, "imagenFondo", codigoFondo);
+
+          gatitoTextura = new Rectangulo(gl, -3.8, -3.8, -2.5, -2.5, 0, 12/13, 1/4, 1);
+          codigoGatito = gl.createTexture();
+          leeLaTextura(gl, "imagenGatito", codigoGatito);
+
+          marioTextura = new Rectangulo(gl, -0.5, -0.5, 0.5, 0.5, 0, 0, 1/7, 1/6);
+          codigoMario = gl.createTexture();
+          leeLaTextura(gl, "imagenMario", codigoMario);
+
+          /* Paso 4: Se obtiene los ID de las variables de entrada de los shaders */
+          gl.useProgram(programaID);
+          
+          uMatrizProyeccion = gl.getUniformLocation(programaID, "uMatrizProyeccion");
+          uMatrizVista = gl.getUniformLocation(programaID, "uMatrizVista");
+          uMatrizModelo = gl.getUniformLocation(programaID, "uMatrizModelo");
+          uUnidadDeTextura = gl.getUniformLocation(programaID, "uUnidadDeTextura");
+          uMatrizTextura = gl.getUniformLocation(programaID, "uMatrizTextura");
+
+          /* Paso 5: Se define la proyección */
+          // Define la Matriz de Proyección
+          ortho(MatrizProyeccion, -5, 5, -5, 5, -5, 5);
+
+          // Se envia la Matriz de Proyección al shader
+          gl.uniformMatrix4fv(uMatrizProyeccion, false, MatrizProyeccion);
+
+          /* Paso 6: Se prepara para renderizar */
+          /* Matriz del Vista */
+          identidad(MatrizVista);
+
+          // Se envia la Matriz de Vista al shader
+          gl.uniformMatrix4fv(uMatrizVista, false, MatrizVista);
+
+          // Para renderizar objetos transparentes (se considera el valor alfa)
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+          // Color de fondo          
+          gl.clearColor(0.0, 0.0, 0.0, 1.0);
+
+          // Iniciar el loop de renderizado
+          dibuja();
+        }
+
+        /* Llama a main una vez que la página web se haya cargado */
+        window.onload = main;
+      </script>
+   </body>
+</html>
